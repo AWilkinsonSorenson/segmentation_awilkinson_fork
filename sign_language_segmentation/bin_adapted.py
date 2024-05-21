@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 import argparse
-import os
-
 import numpy as np
+import os
 import pympi
 import sys
 import torch
 from src.model import PoseTaggingModel
 from pose_format import Pose
 from pose_format.utils.generic import pose_normalization_info, pose_hide_legs, normalize_hands_3d
-
-from sign_language_segmentation.src.utils.probs_to_segments import probs_to_segments
+from pickle_utils import save_to_pickle
+from scipy import stats
+from sign_language_segmentation.src.utils.probs_to_segments import probs_to_segments, custom_probs_to_segments
 
 
 def boolean_string(s):
@@ -128,8 +128,12 @@ def predict(model, pose: Pose):
 
 def get_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--id', required=True, type=str, help='the base name of the input file')
     parser.add_argument('--pose', required=True, type=str, help='path to input pose file')
-    parser.add_argument('--elan', required=True, type=str, help='path to output elan file')
+    parser.add_argument('--elan_milliseconds_dir', required=True, type=str, help='path to output elan directory, with milliseconds')
+    parser.add_argument('--elan_frames_dir', required=True, type=str, help='path to output elan directory, with frames')
+    parser.add_argument('--segments_pickle_dir', required=False, type=str, help='path to output segmentation directory, with frames; pickle format')
+    parser.add_argument('--segments_plaintext_dir', required=False, type=str, help='path to output segmentation directory, with frames; plaintext format')
     parser.add_argument('--filename', default=None, required=False, type=str, help='path to filename file')
     parser.add_argument('--subtitles', default=None, required=False, type=str, help='path to subtitle file')
     parser.add_argument('--model', default='model_E1s-1.pth', required=False, type=str, help='path to model file')
@@ -154,6 +158,141 @@ def get_args():
                         help='Sentence segments o_threshold')
 
     return parser.parse_args()
+
+def create_eaf(args, tiers, fps, boundary_type, postprocessed):
+
+    assert boundary_type in ["milliseconds", "frames"]
+
+    eaf = pympi.Elan.Eaf(author="sign-language-processing/transcription")
+
+    if args.filename is not None:
+        mimetype = None  # pympi is not familiar with mp4 files
+        if args.filename.endswith(".mp4"):
+            mimetype = "video/mp4"
+        eaf.add_linked_file(args.filename, mimetype=mimetype)
+
+    if not args.no_pose_link:
+        eaf.add_linked_file(args.pose, mimetype="application/pose")
+
+    for tier_id, segments in tiers.items():
+        eaf.add_tier(tier_id)
+        for segment in segments:
+            if boundary_type == "milliseconds":
+                # print(f"segment['start']:\t{str(segment['start'])}")
+                # print(f"segment['end']:\t{str(segment['end'])}\n")
+                eaf.add_annotation(tier_id, int(segment["start"] / fps * 1000), int(segment["end"] / fps * 1000))
+            elif boundary_type == "frames":
+                # print(f"segment['start']:\t{str(segment['start'])}")
+                # print(f"segment['end']:\t{str(segment['end'])}")
+                eaf.add_annotation(tier_id, int(segment["start"]), int(segment["end"]))
+
+    print(f"Saving elan file to disk…\n\n================================================================================\n\n")
+
+    if boundary_type == "frames":
+        if postprocessed:
+            eaf.to_file(os.path.join(args.elan_frames_dir, "POSTPROCESSED", str(args.id) + ".eaf"))
+        else:
+            eaf.to_file(os.path.join(args.elan_frames_dir, "NON_POSTPROCESSED", str(args.id) + ".eaf"))
+
+    elif boundary_type == "milliseconds":
+        if postprocessed:
+            eaf.to_file(os.path.join(args.elan_milliseconds_dir, "POSTPROCESSED", str(args.id) + ".eaf"))
+        else:
+            eaf.to_file(os.path.join(args.elan_milliseconds_dir, "NON_POSTPROCESSED", str(args.id) + ".eaf"))
+
+
+def get_mmm(data, tag):
+
+    # "MMM" is short for "mean, median, mode" + related values
+
+    BIO = {"O": 0, "B": 1, "I": 2}
+
+    values = data[:, BIO[tag]]
+
+    mean_val = np.mean(values)
+    median_val = np.median(values)
+    mode_val, _ = stats.mode(values)
+    max_val = np.max(values)
+    min_val = np.min(values)
+    std_val = np.std(values)
+
+    # Ensure mode_val is correctly handled
+    if isinstance(mode_val, np.ndarray):
+        mode_val = mode_val[0]
+
+    mmm_data_structure = {"mean": mean_val, "median": median_val, "mode": mode_val, "max": max_val, "min": min_val, "std": std_val}
+
+    return mmm_data_structure
+
+
+def calculate_threshold(tag, mean, min, std):
+    if tag not in ["B", "I", "O"]:
+        raise ValueError(f"Invalid tag: {tag}.  Expected one of 'B', 'I', or 'O'.")
+
+    # This logic is only a heuristic, for now.
+    if tag == "B" or tag == "I":
+
+        # threshold = int(np.floor(mean - (0.5 * std)))
+        # threshold = int(np.floor(mean + (0.5 * std)))
+        threshold = int(np.floor(mean))
+
+        if threshold < min:
+            threshold = int(min)
+    elif tag == "O":
+
+        threshold = int(np.floor(mean) - (0.5 * std))
+        # threshold = int(np.floor(mean + (0.5 * std)))
+        # threshold = int(np.floor(mean))
+
+        if threshold < min:
+            threshold = int(min)
+
+    return threshold
+
+
+def postprocess_segments(start_and_end_frames, fps, seconds_of_gap_to_combine, seconds_to_delete, seconds_to_expand):
+    def combine_segments(segments, gap_frames):
+        combined_segments = []
+        current_segment = segments[0]
+
+        for segment in segments[1:]:
+            if segment['start'] <= current_segment['end'] + gap_frames:
+                current_segment['end'] = max(current_segment['end'], segment['end'])
+            else:
+                combined_segments.append(current_segment)
+                current_segment = segment
+
+        combined_segments.append(current_segment)
+        return combined_segments
+
+    # Initial combination of segments
+    combined_segments = combine_segments(start_and_end_frames, seconds_of_gap_to_combine * fps)
+
+    # Remove short segments
+    combined_segments = [
+        segment for segment in combined_segments
+        if segment['end'] - segment['start'] >= (seconds_to_delete * fps)
+    ]
+
+    # Expand each segment
+    expanded_segments = []
+    for segment in combined_segments:
+        expanded_segment = {
+            'start': max(0, segment['start'] - int(seconds_to_expand * fps)),
+            'end': segment['end'] + int(seconds_to_expand * fps)
+        }
+        expanded_segments.append(expanded_segment)
+
+    # Recombine expanded segments
+    final_segments = combine_segments(expanded_segments, seconds_of_gap_to_combine * fps)
+
+    # Sanity check
+    for i in range(len(final_segments) - 1):
+        if final_segments[i]['end'] >= final_segments[i + 1]['start']:
+            raise ValueError(f"Invalid segments: Segment {i} ends at {final_segments[i]['end']}, which is not before "
+                             f"segment {i + 1}, which starts at {final_segments[i + 1]['start']}.")
+
+    return final_segments
 
 
 def main():
@@ -183,6 +322,7 @@ def main():
     else:
         if args.non_jit:
 
+            # The model_args values should be considered hardcoded; they come from the segmentation model training
             model_args = {'sign_class_weights': [7.105956030624457, 276.6916930933652, 1.1686900665577535],
                           'sentence_class_weights': [15.605907542499951, 11869.878091872792, 1.0685616341999475],
                           'pose_dims': (75, 3), 'pose_projection_dim': 256, 'hidden_dim': 512, 'encoder_depth': 1,
@@ -193,7 +333,6 @@ def main():
 
         else:
             print("Please specify whether to load jit or non-jit model")
-            # sys.exit(1)
 
     print(f'\nModel:\t{str(model)}\n')
     print(f'\nPose:\t{str(pose)}\n')
@@ -204,67 +343,99 @@ def main():
 
     probs = predict(model, pose)
 
-    print(f"args.sign_segments_b_threshold: {args.sign_segments_b_threshold}")
-    print(f"args.sign_segments_o_threshold: {args.sign_segments_o_threshold}")
-    print(f"args.sentence_segments_b_threshold: {args.sentence_segments_b_threshold}")
-    print(f"args.sentence_segments_o_threshold: {args.sentence_segments_o_threshold}")
-    print(f"args.sign_segments_i_threshold: {args.sign_segments_i_threshold}")
-    print(f"args.sentence_segments_i_threshold: {args.sentence_segments_i_threshold}")
+    # print(f"args.sign_segments_b_threshold: {args.sign_segments_b_threshold}")
+    # print(f"args.sign_segments_o_threshold: {args.sign_segments_o_threshold}")
+    # print(f"args.sentence_segments_b_threshold: {args.sentence_segments_b_threshold}")
+    # print(f"args.sentence_segments_o_threshold: {args.sentence_segments_o_threshold}")
+    # print(f"args.sign_segments_i_threshold: {args.sign_segments_i_threshold}")
+    # print(f"args.sentence_segments_i_threshold: {args.sentence_segments_i_threshold}")
+
+    fps = pose.body.fps
+    print(f"\nfps:\t{str(fps)}\n")
 
     if not args.use_i_threshold:
 
-        sign_segments = probs_to_segments(probs["sign"], args.sign_segments_b_threshold, args.sign_segments_o_threshold)
-        sentence_segments = probs_to_segments(probs["sentence"], args.sentence_segments_b_threshold,
-                                              args.sentence_segments_o_threshold)
+        torch.set_printoptions(threshold=torch.inf)
+
+        # print(f"logits (sentence) shape:\t{str(probs['sentence'].shape)}")
+        # print(f"\nlogits (sentence):\n{str(probs['sentence'])}\n")
+
+        # This model is not trained to accurately predict "sign segments", only "sentence segments".  Setting sign
+        # segments to the empty list for simplicity.
+        # sign_segments = probs_to_segments(probs["sign"], args.sign_segments_b_threshold, args.sign_segments_o_threshold)
+        sign_segments = []
+
+        # sentence_segments = probs_to_segments(probs["sentence"], args.sentence_segments_b_threshold,
+        #                                       args.sentence_segments_o_threshold, threshold_likeliest=False)
+
+        sentence_probs_percentages = np.round(np.exp(probs["sentence"].numpy().squeeze()) * 100)
+
+        sentence_mmm_values_B = get_mmm(sentence_probs_percentages, "B")
+        sentence_mmm_values_I = get_mmm(sentence_probs_percentages, "I")
+        sentence_mmm_values_O = get_mmm(sentence_probs_percentages, "O")
+
+        print(f"\nsentence_mmm_values_B:\t{str(sentence_mmm_values_B)}")
+        print(f"sentence_mmm_values_I:\t{str(sentence_mmm_values_I)}")
+        print(f"sentence_mmm_values_O:\t{str(sentence_mmm_values_O)}")
+
+        B_threshold = calculate_threshold("B", sentence_mmm_values_B["mean"], sentence_mmm_values_B["min"], sentence_mmm_values_B["std"])
+        I_threshold = calculate_threshold("I", sentence_mmm_values_I["mean"], sentence_mmm_values_I["min"], sentence_mmm_values_I["std"])
+        O_threshold = calculate_threshold("O", sentence_mmm_values_O["mean"], sentence_mmm_values_O["min"], sentence_mmm_values_O["std"])
+
+        print(f"\nB_threshold:\t{str(B_threshold)}")
+        print(f"I_threshold:\t{str(I_threshold)}")
+        print(f"O_threshold:\t{str(O_threshold)}")
+
+        # sys.exit(1)
+
+        # sentence_segments = custom_probs_to_segments(probs["sentence"], 13, 6, 78)
+        sentence_segments = custom_probs_to_segments(sentence_probs_percentages, B_threshold, I_threshold, O_threshold)
+        sentence_segments_postprocessed = postprocess_segments(sentence_segments, fps, 2, 1, 0.5)
 
     else:
         print("I haven't enabled decoding on just the 'i' threshold yet.  Exiting.  Don't use that.")
         sys.exit(1)
 
     print(f"sign_segments:\n{str(sign_segments)}\n\n")
+    print(f"sentence_segments:\n{str(sentence_segments)}\n\n")
 
-    print('Building ELAN file ...')
-    tiers = {
+    print(f"sentence_segments_postprocessed:\n{str(sentence_segments_postprocessed)}\n\n")
+
+    # Save results to various files…
+
+    # Write .eaf files
+    print('Building ELAN files…')
+
+    tiers_non_postprocessed = {
         "SIGN": sign_segments,
         "SENTENCE": sentence_segments,
     }
 
-    fps = pose.body.fps
+    tiers_postprocessed = {
+        "SIGN": sign_segments,
+        "SENTENCE": sentence_segments_postprocessed,
+    }
 
-    print(f"\nfps:\t{str(fps)}\n\n")
+    create_eaf(args, tiers_postprocessed, fps, boundary_type="milliseconds", postprocessed=True)
+    create_eaf(args, tiers_non_postprocessed, fps, boundary_type="milliseconds", postprocessed=False)
+    create_eaf(args, tiers_postprocessed, fps, boundary_type="frames", postprocessed=True)
+    create_eaf(args, tiers_non_postprocessed, fps, boundary_type="frames", postprocessed=False)
 
-    eaf = pympi.Elan.Eaf(author="sign-langauge-processing/transcription")
-    # if args.video is not None:
-    #     mimetype = None  # pympi is not familiar with mp4 files
-    #     if args.video.endswith(".mp4"):
-    #         mimetype = "video/mp4"
-    #     eaf.add_linked_file(args.video, mimetype=mimetype)
 
-    if args.filename is not None:
-        mimetype = None  # pympi is not familiar with mp4 files
-        if args.filename.endswith(".mp4"):
-            mimetype = "video/mp4"
-        eaf.add_linked_file(args.filename, mimetype=mimetype)
+    # Write pickle files
+    if args.segments_pickle_dir != None:
+        print(f"\nWriting pickle-formatted segmentation data structures to {args.segments_pickle_dir}…")
+        save_to_pickle(sentence_segments_postprocessed, os.path.join(args.segments_pickle_dir, "POSTPROCESSED", args.id + ".pkl"))
+        save_to_pickle(sentence_segments_postprocessed, os.path.join(args.segments_pickle_dir, "NON_POSTPROCESSED", args.id + ".pkl"))
 
-    if not args.no_pose_link:
-        eaf.add_linked_file(args.pose, mimetype="application/pose")
+    # Write plaintext files
+    if args.segments_plaintext_dir != None:
+        print(f"\nWriting plaintext-formatted segmentation data structures to {args.segments_plaintext_dir}…")
+        with open(os.path.join(args.segments_plaintext_dir, "POSTPROCESSED", args.id + ".txt"), "w", encoding="utf-8") as fw:
+            fw.write(str(sentence_segments_postprocessed))
+        with open(os.path.join(args.segments_plaintext_dir, "NON_POSTPROCESSED", args.id + ".txt"), "w", encoding="utf-8") as fw:
+            fw.write(str(sentence_segments))
 
-    for tier_id, segments in tiers.items():
-        eaf.add_tier(tier_id)
-        for segment in segments:
-            eaf.add_annotation(tier_id, int(segment["start"] / fps * 1000), int(segment["end"] / fps * 1000))
-
-    if args.subtitles and os.path.exists(args.subtitles):
-        import srt
-        eaf.add_tier("SUBTITLE")
-        with open(args.subtitles, "r") as infile:
-            for subtitle in srt.parse(infile):
-                start = subtitle.start.total_seconds()
-                end = subtitle.end.total_seconds()
-                eaf.add_annotation("SUBTITLE", int(start * 1000), int(end * 1000), subtitle.content)
-
-    print('Saving to disk…')
-    eaf.to_file(args.elan)
 
 
 if __name__ == '__main__':
