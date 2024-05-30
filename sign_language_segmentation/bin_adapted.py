@@ -461,9 +461,9 @@ def main():
 
     sentence_probs_percentages_list = sentence_probs_percentages.tolist()
 
-    probs_out_dir = "../sentence_probs_percentages/"
-    with open(os.path.join(probs_out_dir, f"{args.id}.txt"), "w", encoding="utf-8") as fw_probs:
-        fw_probs.write(str(sentence_probs_percentages_list))
+    # probs_out_dir = "../sentence_probs_percentages/"
+    # with open(os.path.join(probs_out_dir, f"{args.id}.txt"), "w", encoding="utf-8") as fw_probs:
+    #     fw_probs.write(str(sentence_probs_percentages_list))
 
     sentence_mmm_values_B = get_mmm(sentence_probs_percentages, "B")
     sentence_mmm_values_I = get_mmm(sentence_probs_percentages, "I")
