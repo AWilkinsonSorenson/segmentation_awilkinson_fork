@@ -81,69 +81,6 @@ def probs_to_segments(probs, b_threshold=50., o_threshold=50., i_threshold=50., 
     return segments
 
 
-# def custom_probs_to_segments(probs, b_threshold, i_threshold, o_threshold):
-#     # Convert logits to probabilities and scale them
-#     # probs = np.round(np.exp(logits.numpy().squeeze()) * 100)
-#
-#     np.set_printoptions(threshold=np.inf)
-#
-#     segments = []
-#     segment = {"start": None, "end": None}
-#
-#     idx = 0
-#     while idx < len(probs):
-#         b = float(probs[idx, BIO["B"]])
-#         i = float(probs[idx, BIO["I"]])
-#         o = float(probs[idx, BIO["O"]])
-#
-#         if b >= b_threshold or i >= i_threshold:
-#             if o < o_threshold:
-#                 if segment["start"] is None:
-#                     segment["start"] = idx  # Start a new segment
-#             elif o >= o_threshold:
-#                 if segment["start"] is not None:
-#                     segment["end"] = idx - 1  # End the current segment
-#                     if segment["end"] > segment["start"]:  # Ensure segment length is at least one frame
-#                         segments.append(segment)
-#                     segment = {"start": None, "end": None}  # Reset the segment
-#         else:
-#             if segment["start"] is not None:
-#                 segment["end"] = idx - 1  # End the current segment
-#                 if segment["end"] > segment["start"]:  # Ensure segment length is at least one frame
-#                     segments.append(segment)
-#                 segment = {"start": None, "end": None}  # Reset the segment
-#
-#         idx += 1
-#
-#     # Handle the case where the last segment reaches the end of the array
-#     if segment["start"] is not None:
-#         segment["end"] = len(probs) - 1
-#         if segment["end"] > segment["start"]:  # Ensure segment length is at least one frame
-#             segments.append(segment)
-#
-#     return segments
-
-
-# def find_true_spans(data):
-#     spans = []
-#     start = None
-#
-#     for i, value in enumerate(data):
-#         if value:
-#             if start is None:
-#                 start = i
-#         else:
-#             if start is not None:
-#                 spans.append([start, i - 1])
-#                 start = None
-#
-#     # Handle case where the last value is True
-#     if start is not None:
-#         spans.append([start, len(data) - 1])
-#
-#     # [[0, 33], [49, 59], [74, 116], [123, 132], [136, 140], [144, 150], [187, 221], [226, 249], [257, 273], [276, 308], [316, 319], [325, 328], [336, 377]]
-#     return spans
-
 def find_true_spans(data):
     spans = []
     start = None
