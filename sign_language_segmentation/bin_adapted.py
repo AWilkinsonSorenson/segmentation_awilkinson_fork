@@ -6,6 +6,7 @@ import pympi
 import sys
 import torch
 from copy import deepcopy
+from decimal import Decimal
 from src.model import PoseTaggingModel
 from pose_format import Pose
 from pose_format.utils.generic import pose_normalization_info, pose_hide_legs, normalize_hands_3d
@@ -461,9 +462,9 @@ def main():
 
     sentence_probs_percentages_list = sentence_probs_percentages.tolist()
 
-    # probs_out_dir = "../sentence_probs_percentages/"
-    # with open(os.path.join(probs_out_dir, f"{args.id}.txt"), "w", encoding="utf-8") as fw_probs:
-    #     fw_probs.write(str(sentence_probs_percentages_list))
+    probs_out_dir = "../sentence_probs_percentages/"
+    with open(os.path.join(probs_out_dir, f"{args.id}.txt"), "w", encoding="utf-8") as fw_probs:
+        fw_probs.write(str(sentence_probs_percentages_list))
 
     sentence_mmm_values_B = get_mmm(sentence_probs_percentages, "B")
     sentence_mmm_values_I = get_mmm(sentence_probs_percentages, "I")
@@ -554,6 +555,68 @@ def main():
         with open(os.path.join(args.segments_plaintext_dir, "NON_POSTPROCESSED", args.id + ".txt"), "w",
                   encoding="utf-8") as fw:
             fw.write(str(sentence_segments))
+
+
+def simple_load_pose(in_pose_file, optical_flow):
+    print(f"Loading pose from {in_pose_file}…\n")
+    with open(in_pose_file, "rb") as f:
+        pose = Pose.read(f.read())
+
+        if optical_flow:
+            pose = process_pose(pose, optical_flow=True)
+        else:
+            pose = process_pose(pose)
+
+    return pose
+
+
+def convert_frames_to_seconds(data, frame_rate):
+    return [{'start': float(round(Decimal(datum['start'] / frame_rate), 2)), 'end': float(round(Decimal(datum['end'] / frame_rate), 2))} for datum in data]
+
+def add_1_to_frame_numbers(data):
+    return [{'start': datum['start'] + 1, 'end': datum['end'] + 1} for datum in data]
+
+
+def simple_segmentation_prediction(in_pose_file, model_name, optical_flow=False):
+    # Load the pose file
+    pose = simple_load_pose(in_pose_file, optical_flow)
+
+    # Load the model
+
+    # These values come from training the model named "kylie_NOflow_01", and should not be changed.
+    model_args = {'sign_class_weights': [2.2511743215031315, 313.6909090909091, 1.8096286972938955],
+                  'sentence_class_weights': [6.955919903238812, 1478.8285714285714, 1.1688232504572862],
+                  'pose_dims': (75, 3), 'pose_projection_dim': 256, 'hidden_dim': 512, 'encoder_depth': 1,
+                  'encoder_bidirectional': True, 'encoder_autoregressive': False, 'tagset_size': 3,
+                  'lr_scheduler': 'none', 'learning_rate': 0.001, 'b_threshold': 50, 'o_threshold': 50,
+                  'threshold_likeliest': False}
+
+    install_dir = str(os.path.dirname(os.path.abspath(__file__)))
+    model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", model_name, "best.ckpt"),
+                                model_args)
+
+    # Get predicted B, I, O tag probabilities
+    probs = predict(model, pose)
+    sentence_probs_percentages = np.round(np.exp(probs["sentence"].numpy().squeeze()) * 100)
+
+    # Get segmentations based on tag probabilities
+    sentence_segments_frames = custom_probs_to_segments_simple(sentence_probs_percentages, 64)
+
+    # Adjust by 1 so that the first index is frame 1
+    sentence_segments_frames = add_1_to_frame_numbers(sentence_segments_frames)
+
+    # Postprocess segmentations
+    fps = pose.body.fps
+    overall_len = probs["sentence"].shape[1] - 1
+    original_sentence_segments = deepcopy(sentence_segments_frames)
+    sentence_segments_postprocessed_frames = postprocess_segments(original_sentence_segments, fps, overall_len, 0.75,
+                                                                  0.75,
+                                                                  0.)
+
+    sentence_segments_seconds = convert_frames_to_seconds(sentence_segments_frames, fps)
+    sentence_segments_postprocessed_seconds = convert_frames_to_seconds(sentence_segments_postprocessed_frames, fps)
+
+    return sentence_segments_frames, sentence_segments_postprocessed_frames, sentence_segments_seconds, sentence_segments_postprocessed_seconds, fps
 
 
 if __name__ == '__main__':
