@@ -47,15 +47,22 @@ def add_optical_flow(pose: Pose):
 
 
 def process_pose(pose: Pose, optical_flow=False, hand_normalization=False):
+
     print(f"Optical flow variable value (in bin.process_pose):\t{optical_flow}")
 
-    pose = pose.get_components(["POSE_LANDMARKS", "LEFT_HAND_LANDMARKS", "RIGHT_HAND_LANDMARKS"])
+    # This is for the model with MediaPipe keypoints
+    # pose = pose.get_components(["POSE_LANDMARKS", "LEFT_HAND_LANDMARKS", "RIGHT_HAND_LANDMARKS"])
+
+    # This is for the model with YOLO keypoints
+    pose = pose.get_components(["POSE_LANDMARKS"])
 
     normalization_info = pose_normalization_info(pose.header)
 
     # Normalize pose
     pose = pose.normalize(normalization_info)
-    pose_hide_legs(pose)
+
+    # Not needed for model from YOLO keypoints
+    # pose_hide_legs(pose)
 
     if hand_normalization:
         normalize_hands_3d(pose)
@@ -571,13 +578,15 @@ def simple_load_pose(in_pose_file, optical_flow):
 
 
 def convert_frames_to_seconds(data, frame_rate):
-    return [{'start': float(round(Decimal(datum['start'] / frame_rate), 2)), 'end': float(round(Decimal(datum['end'] / frame_rate), 2))} for datum in data]
+    return [{'start': float(round(Decimal(datum['start'] / frame_rate), 2)),
+             'end': float(round(Decimal(datum['end'] / frame_rate), 2))} for datum in data]
+
 
 def add_1_to_frame_numbers(data):
     return [{'start': datum['start'] + 1, 'end': datum['end'] + 1} for datum in data]
 
 
-def simple_segmentation_prediction(in_pose_file, model_name, optical_flow=False):
+def simple_segmentation_prediction_sentence_tier(in_pose_file, model_name, optical_flow=False):
     # Load the pose file
     pose = simple_load_pose(in_pose_file, optical_flow)
 
@@ -616,7 +625,51 @@ def simple_segmentation_prediction(in_pose_file, model_name, optical_flow=False)
     sentence_segments_seconds = convert_frames_to_seconds(sentence_segments_frames, fps)
     sentence_segments_postprocessed_seconds = convert_frames_to_seconds(sentence_segments_postprocessed_frames, fps)
 
-    return sentence_segments_frames, sentence_segments_postprocessed_frames, sentence_segments_seconds, sentence_segments_postprocessed_seconds, fps
+    return (sentence_segments_frames, sentence_segments_postprocessed_frames, sentence_segments_seconds,
+            sentence_segments_postprocessed_seconds, fps)
+
+
+def simple_segmentation_prediction_sign_tier(in_pose_file, model_name, optical_flow=False):
+    # Load the pose file
+    pose = simple_load_pose(in_pose_file, optical_flow)
+
+    # Load the model
+
+    # These values come from training the model named "kylie_yolo_02_noflow_01", and should not be changed.
+    model_args = {'sign_class_weights': [2.248520967461284, 313.26666666666665, 1.8113610877488084],
+                  'sentence_class_weights': [6.9586698976844374, 1476.8285714285714, 1.1687468909691132],
+                  'pose_dims': (6, 3), 'pose_projection_dim': 256, 'hidden_dim': 2048, 'encoder_depth': 1,
+                  'encoder_bidirectional': True, 'encoder_autoregressive': False, 'tagset_size': 3,
+                  'lr_scheduler': 'none', 'learning_rate': 0.001, 'b_threshold': 50, 'o_threshold': 50,
+                  'threshold_likeliest': False}
+
+    install_dir = str(os.path.dirname(os.path.abspath(__file__)))
+    model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", model_name, "best.ckpt"),
+                                model_args)
+
+    # Get predicted B, I, O tag probabilities
+    probs = predict(model, pose)
+    sign_probs_percentages = np.round(np.exp(probs["sign"].numpy().squeeze()) * 100)
+
+    # Get segmentations based on tag probabilities
+    sign_segments_frames = custom_probs_to_segments_simple(sign_probs_percentages, 50)
+
+    # Adjust by 1 so that the first index is frame 1
+    sign_segments_frames = add_1_to_frame_numbers(sign_segments_frames)
+
+    # Postprocess segmentations
+    fps = pose.body.fps
+    overall_len = probs["sign"].shape[1] - 1
+    original_sign_segments = deepcopy(sign_segments_frames)
+    sign_segments_postprocessed_frames = postprocess_segments(original_sign_segments, fps, overall_len, 0.75,
+                                                              0.75,
+                                                              0.)
+
+    sign_segments_seconds = convert_frames_to_seconds(sign_segments_frames, fps)
+    sign_segments_postprocessed_seconds = convert_frames_to_seconds(sign_segments_postprocessed_frames, fps)
+
+    return (sign_segments_frames, sign_segments_postprocessed_frames, sign_segments_seconds,
+            sign_segments_postprocessed_seconds, fps)
 
 
 if __name__ == '__main__':
