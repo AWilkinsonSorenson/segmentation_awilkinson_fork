@@ -15,7 +15,11 @@ from scipy import stats
 from sign_language_segmentation.src.utils.probs_to_segments import (probs_to_segments, custom_probs_to_segments,
                                                                     custom_probs_to_segments_with_o,
                                                                     custom_probs_to_segments_simple,
-                                                                    custom_probs_to_segments_simple_2)
+                                                                    custom_probs_to_segments_simple_2,
+                                                                    custom_probs_to_segments_simple_i)
+from segmentation_modeling.segmentation_utilities.SAD_model_configs import get_SAD_model_config_given_model_name
+from segmentation_modeling.segmentation_utilities.various_utils import \
+    add_1_to_frame_numbers, convert_drop_frames_segmentation_predictions_to_realtime, convert_frames_to_seconds
 
 
 def boolean_string(s):
@@ -47,7 +51,6 @@ def add_optical_flow(pose: Pose):
 
 
 def process_pose(pose: Pose, optical_flow=False, hand_normalization=False):
-
     print(f"Optical flow variable value (in bin.process_pose):\t{optical_flow}")
 
     # This is for the model with MediaPipe keypoints
@@ -577,35 +580,30 @@ def simple_load_pose(in_pose_file, optical_flow):
     return pose
 
 
-def convert_frames_to_seconds(data, frame_rate):
-    return [{'start': float(round(Decimal(datum['start'] / frame_rate), 2)),
-             'end': float(round(Decimal(datum['end'] / frame_rate), 2))} for datum in data]
+def simple_segmentation_prediction_sentence_tier(in_pose_file: str, SAD_model_name: str, optical_flow=False) -> tuple:
 
+    valid_model_names = [
+        "kylie_NOflow_01"
+    ]
 
-def add_1_to_frame_numbers(data):
-    return [{'start': datum['start'] + 1, 'end': datum['end'] + 1} for datum in data]
+    assert SAD_model_name in valid_model_names, f"Model name must be one of {str(valid_model_names)}."
 
-
-def simple_segmentation_prediction_sentence_tier(in_pose_file, model_name, optical_flow=False):
     # Load the pose file
     pose = simple_load_pose(in_pose_file, optical_flow)
 
     # Load the model
-
-    # These values come from training the model named "kylie_NOflow_01", and should not be changed.
-    model_args = {'sign_class_weights': [2.2511743215031315, 313.6909090909091, 1.8096286972938955],
-                  'sentence_class_weights': [6.955919903238812, 1478.8285714285714, 1.1688232504572862],
-                  'pose_dims': (75, 3), 'pose_projection_dim': 256, 'hidden_dim': 512, 'encoder_depth': 1,
-                  'encoder_bidirectional': True, 'encoder_autoregressive': False, 'tagset_size': 3,
-                  'lr_scheduler': 'none', 'learning_rate': 0.001, 'b_threshold': 50, 'o_threshold': 50,
-                  'threshold_likeliest': False}
+    SAD_config = get_SAD_model_config_given_model_name(SAD_model_name)
+    SAD_model_args = SAD_config["model_args"]
+    # drop_frames_factor should be None for the model(s) for which this function is called, and is not used herein;
+    # get it anyway
+    drop_frames_factor = SAD_config["drop_frames_factor"]
 
     install_dir = str(os.path.dirname(os.path.abspath(__file__)))
-    model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", model_name, "best.ckpt"),
-                                model_args)
+    SAD_model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", SAD_model_name, "best.ckpt"),
+                                SAD_model_args)
 
     # Get predicted B, I, O tag probabilities
-    probs = predict(model, pose)
+    probs = predict(SAD_model, pose)
     sentence_probs_percentages = np.round(np.exp(probs["sentence"].numpy().squeeze()) * 100)
 
     # Get segmentations based on tag probabilities
@@ -618,9 +616,15 @@ def simple_segmentation_prediction_sentence_tier(in_pose_file, model_name, optic
     fps = pose.body.fps
     overall_len = probs["sentence"].shape[1] - 1
     original_sentence_segments = deepcopy(sentence_segments_frames)
-    sentence_segments_postprocessed_frames = postprocess_segments(original_sentence_segments, fps, overall_len, 0.75,
-                                                                  0.75,
-                                                                  0.)
+
+    # The seconds_of_gap_to_combine, seconds_to_delete, and seconds_to_expand parameter values were set by Andrew,
+    # empirically
+    sentence_segments_postprocessed_frames = postprocess_segments(start_and_end_frames=original_sentence_segments,
+                                                                  fps=fps,
+                                                                  endpoint=overall_len,
+                                                                  seconds_of_gap_to_combine=0.75,
+                                                                  seconds_to_delete=0.75,
+                                                                  seconds_to_expand=0.)
 
     sentence_segments_seconds = convert_frames_to_seconds(sentence_segments_frames, fps)
     sentence_segments_postprocessed_seconds = convert_frames_to_seconds(sentence_segments_postprocessed_frames, fps)
@@ -629,30 +633,42 @@ def simple_segmentation_prediction_sentence_tier(in_pose_file, model_name, optic
             sentence_segments_postprocessed_seconds, fps)
 
 
-def simple_segmentation_prediction_sign_tier(in_pose_file, model_name, optical_flow=False):
+def simple_segmentation_prediction_sign_tier(in_pose_file: str, SAD_model_name: str, optical_flow=False) -> tuple:
+    valid_model_names = [
+        "kylie_yolo_02_noflow_01",
+        "kylie_yolo_drop_frames_4_of_5_noflow_01"
+    ]
+
+    assert SAD_model_name in valid_model_names, f"Model name must be one of {str(valid_model_names)}."
+
     # Load the pose file
     pose = simple_load_pose(in_pose_file, optical_flow)
 
     # Load the model
-
-    # These values come from training the model named "kylie_yolo_02_noflow_01", and should not be changed.
-    model_args = {'sign_class_weights': [2.248520967461284, 313.26666666666665, 1.8113610877488084],
-                  'sentence_class_weights': [6.9586698976844374, 1476.8285714285714, 1.1687468909691132],
-                  'pose_dims': (6, 3), 'pose_projection_dim': 256, 'hidden_dim': 2048, 'encoder_depth': 1,
-                  'encoder_bidirectional': True, 'encoder_autoregressive': False, 'tagset_size': 3,
-                  'lr_scheduler': 'none', 'learning_rate': 0.001, 'b_threshold': 50, 'o_threshold': 50,
-                  'threshold_likeliest': False}
+    SAD_config = get_SAD_model_config_given_model_name(SAD_model_name)
+    SAD_model_args = SAD_config["model_args"]
+    drop_frames_factor = SAD_config["drop_frames_factor"]
 
     install_dir = str(os.path.dirname(os.path.abspath(__file__)))
-    model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", model_name, "best.ckpt"),
-                                model_args)
+    SAD_model = load_model_no_jit_2(os.path.join(install_dir, "..", "..", "models", SAD_model_name, "best.ckpt"),
+                                SAD_model_args)
 
     # Get predicted B, I, O tag probabilities
-    probs = predict(model, pose)
+    probs = predict(SAD_model, pose)
     sign_probs_percentages = np.round(np.exp(probs["sign"].numpy().squeeze()) * 100)
 
     # Get segmentations based on tag probabilities
-    sign_segments_frames = custom_probs_to_segments_simple(sign_probs_percentages, 50)
+    # The 'o_threshold' and 'i_threshold' parameter values below were set by Andrew, empirically.  They were seen to
+    # yield the best results on the devtest set of annotated Kylie data.  They can be adjusted down the road if/when
+    # we get more annotated data wherewith to evaluate the models' performance.
+
+    if SAD_model_name == "kylie_yolo_02_noflow_01":
+        # Any frame with o < o_threshold is considered "signing"
+        sign_segments_frames = custom_probs_to_segments_simple(sign_probs_percentages, o_threshold=50)
+
+    elif SAD_model_name == "kylie_yolo_drop_frames_4_of_5_noflow_01":
+        # Any frame with i >= i_threshold is considered "signing"
+        sign_segments_frames = custom_probs_to_segments_simple_i(sign_probs_percentages, i_threshold=20)
 
     # Adjust by 1 so that the first index is frame 1
     sign_segments_frames = add_1_to_frame_numbers(sign_segments_frames)
@@ -661,12 +677,44 @@ def simple_segmentation_prediction_sign_tier(in_pose_file, model_name, optical_f
     fps = pose.body.fps
     overall_len = probs["sign"].shape[1] - 1
     original_sign_segments = deepcopy(sign_segments_frames)
-    sign_segments_postprocessed_frames = postprocess_segments(original_sign_segments, fps, overall_len, 0.75,
-                                                              0.75,
-                                                              0.)
 
-    sign_segments_seconds = convert_frames_to_seconds(sign_segments_frames, fps)
-    sign_segments_postprocessed_seconds = convert_frames_to_seconds(sign_segments_postprocessed_frames, fps)
+    # The seconds_of_gap_to_combine, seconds_to_delete, and seconds_to_expand parameter values were set by Andrew,
+    # empirically.
+
+    # The "fps" term used here reflects the frame rate of the original tracker video; if frames have been dropped, this
+    # term will not have been affected by that.
+    if drop_frames_factor:
+        sign_segments_postprocessed_frames = postprocess_segments(start_and_end_frames=original_sign_segments,
+                                                                  fps=fps,
+                                                                  endpoint=overall_len,
+                                                                  seconds_of_gap_to_combine=(0.75 / drop_frames_factor),
+                                                                  seconds_to_delete=(0.75 / drop_frames_factor),
+                                                                  seconds_to_expand=(0. / drop_frames_factor))
+
+        sign_segments_seconds_initial = convert_frames_to_seconds(sign_segments_frames, fps)
+        sign_segments_postprocessed_seconds_initial = convert_frames_to_seconds(sign_segments_postprocessed_frames, fps)
+
+        # If, e.g., 4 out of 5 frames have been dropped, then we must multiply the predicted segment start and end
+        # times by 5
+        sign_segments_seconds = convert_drop_frames_segmentation_predictions_to_realtime(
+            segmentations=sign_segments_seconds_initial, drop_frames_factor=drop_frames_factor)
+        sign_segments_postprocessed_seconds = convert_drop_frames_segmentation_predictions_to_realtime(
+            segmentations=sign_segments_postprocessed_seconds_initial, drop_frames_factor=drop_frames_factor)
+
+    else:
+        sign_segments_postprocessed_frames = postprocess_segments(start_and_end_frames=original_sign_segments,
+                                                                  fps=fps,
+                                                                  endpoint=overall_len,
+                                                                  seconds_of_gap_to_combine=0.75,
+                                                                  seconds_to_delete=0.75,
+                                                                  seconds_to_expand=0.)
+
+        sign_segments_seconds = convert_frames_to_seconds(sign_segments_frames, fps)
+        sign_segments_postprocessed_seconds = convert_frames_to_seconds(sign_segments_postprocessed_frames, fps)
+
+    # If frames have been dropped, we're returning "sign_segments_frames" and "sign_segments_postprocessed_frames"
+    # values that correspond to the reduced number of frames, while returning "sign_segments_seconds" and
+    # "sign_segments_postprocessed_seconds" that correspond to the realtime equivalents.
 
     return (sign_segments_frames, sign_segments_postprocessed_frames, sign_segments_seconds,
             sign_segments_postprocessed_seconds, fps)
