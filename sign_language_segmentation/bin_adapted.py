@@ -636,7 +636,9 @@ def simple_segmentation_prediction_sentence_tier(in_pose_file: str, SAD_model_na
 def simple_segmentation_prediction_sign_tier(in_pose_file: str, SAD_model_name: str, optical_flow=False) -> tuple:
     valid_model_names = [
         "kylie_yolo_02_noflow_01",
-        "kylie_yolo_drop_frames_4_of_5_noflow_01"
+        "kylie_yolo_drop_frames_4_of_5_noflow_01",
+        "kylie_yolo_drop_frames_4_of_5_noflow_fixed_01",
+        "kylie_yolo_drop_frames_4_of_5_noflow_fixed_02"
     ]
 
     assert SAD_model_name in valid_model_names, f"Model name must be one of {str(valid_model_names)}."
@@ -655,6 +657,8 @@ def simple_segmentation_prediction_sign_tier(in_pose_file: str, SAD_model_name: 
 
     # Get predicted B, I, O tag probabilities
     probs = predict(SAD_model, pose)
+    torch.set_printoptions(threshold=np.inf)
+    print(f"probs (within bin_adapted.simple_segmentation_prediction_sign_tier()):\n{str(probs)}")
     sign_probs_percentages = np.round(np.exp(probs["sign"].numpy().squeeze()) * 100)
 
     # Get segmentations based on tag probabilities
@@ -669,6 +673,14 @@ def simple_segmentation_prediction_sign_tier(in_pose_file: str, SAD_model_name: 
     elif SAD_model_name == "kylie_yolo_drop_frames_4_of_5_noflow_01":
         # Any frame with i >= i_threshold is considered "signing"
         sign_segments_frames = custom_probs_to_segments_simple_i(sign_probs_percentages, i_threshold=20)
+
+        # Any frame with o < o_threshold is considered "signing"
+        # sign_segments_frames = custom_probs_to_segments_simple(sign_probs_percentages, o_threshold=70)
+
+    elif SAD_model_name == "kylie_yolo_drop_frames_4_of_5_noflow_fixed_02":
+        sign_segments_frames = custom_probs_to_segments_simple(sign_probs_percentages, o_threshold=64)
+
+
 
     # Adjust by 1 so that the first index is frame 1
     sign_segments_frames = add_1_to_frame_numbers(sign_segments_frames)

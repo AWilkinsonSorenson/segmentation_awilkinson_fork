@@ -117,7 +117,7 @@ def convert_spans_to_segments(spans):
 
 def custom_probs_to_segments(probs, b_threshold, i_threshold, o_threshold):
     frames_T_F = []
-    print(f"\nlen(probs):\t{str(len(probs))}")
+    # print(f"\nlen(probs):\t{str(len(probs))}")
 
     # First, determine if each frame meets the segment inclusion criteria
     for idx in range(len(probs)):
@@ -133,7 +133,7 @@ def custom_probs_to_segments(probs, b_threshold, i_threshold, o_threshold):
         else:
             frames_T_F.append(False)
 
-    print(f"\nlen(frames_T_F): {len(frames_T_F)}")
+    # print(f"\nlen(frames_T_F): {len(frames_T_F)}")
     # print(f"frames_T_F:\n{frames_T_F}")
 
     spans = find_true_spans(frames_T_F)
@@ -146,7 +146,7 @@ def custom_probs_to_segments(probs, b_threshold, i_threshold, o_threshold):
 
 def custom_probs_to_segments_with_o(probs, b_threshold, i_threshold, o_threshold):
     frames_T_F = []
-    print(f"\nlen(probs):\t{str(len(probs))}")
+    # print(f"\nlen(probs):\t{str(len(probs))}")
 
     # Determine if each frame meets the segment inclusion criteria
     for idx in range(len(probs)):
@@ -164,7 +164,7 @@ def custom_probs_to_segments_with_o(probs, b_threshold, i_threshold, o_threshold
             else:
                 frames_T_F.append(False)
 
-    print(f"\nlen(frames_T_F): {len(frames_T_F)}")
+    # print(f"\nlen(frames_T_F): {len(frames_T_F)}")
 
     spans = find_true_spans(frames_T_F)
     segments = convert_spans_to_segments(spans)
@@ -177,8 +177,8 @@ def custom_probs_to_segments_simple(probs, o_threshold):
 
     # print(f"BIO['O']:\t{str(BIO['O'])}")
 
-    print(f"probs:\n{probs}")
-    print(f"\nlen(probs):\t{str(len(probs))}")
+    # print(f"probs (within probs_to_segments.custom_probs_to_segments_simple()):\n{probs}")
+    # print(f"\nlen(probs):\t{str(len(probs))}")
 
     for idx in range(len(probs)):
         o = float(probs[idx, BIO["O"]])
@@ -203,8 +203,8 @@ def custom_probs_to_segments_simple(probs, o_threshold):
 def custom_probs_to_segments_simple_2(probs):
     frames_T_F = []
 
-    print(f"probs:\n{probs}")
-    print(f"\nlen(probs):\t{str(len(probs))}")
+    # print(f"probs:\n{probs}")
+    # print(f"\nlen(probs):\t{str(len(probs))}")
 
     for idx in range(len(probs)):
         b = float(probs[idx, BIO["B"]])
@@ -216,7 +216,7 @@ def custom_probs_to_segments_simple_2(probs):
         else:
             frames_T_F.append(False)
 
-    print(f"frames_T_F:\n{frames_T_F}")
+    # print(f"frames_T_F:\n{frames_T_F}")
 
     spans = find_true_spans(frames_T_F)
     segments = convert_spans_to_segments(spans)
@@ -229,8 +229,8 @@ def custom_probs_to_segments_simple_i(probs, i_threshold):
 
     # print(f"BIO['O']:\t{str(BIO['O'])}")
 
-    print(f"probs:\n{probs}")
-    print(f"\nlen(probs):\t{str(len(probs))}")
+    # print(f"probs:\n{probs}")
+    # print(f"\nlen(probs):\t{str(len(probs))}")
 
     for idx in range(len(probs)):
         i = float(probs[idx, BIO["I"]])
